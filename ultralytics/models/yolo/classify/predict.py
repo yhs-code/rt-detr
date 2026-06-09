@@ -1,8 +1,6 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 
-import cv2
 import torch
-from PIL import Image
 
 from ultralytics.engine.predictor import BasePredictor
 from ultralytics.engine.results import Results
@@ -30,21 +28,12 @@ class ClassificationPredictor(BasePredictor):
     def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         """Initializes ClassificationPredictor setting the task to 'classify'."""
         super().__init__(cfg, overrides, _callbacks)
-        self.args.task = "classify"
-        self._legacy_transform_name = "ultralytics.yolo.data.augment.ToTensor"
+        self.args.task = 'classify'
 
     def preprocess(self, img):
         """Converts input image to model-compatible data type."""
         if not isinstance(img, torch.Tensor):
-            is_legacy_transform = any(
-                self._legacy_transform_name in str(transform) for transform in self.transforms.transforms
-            )
-            if is_legacy_transform:  # to handle legacy transforms
-                img = torch.stack([self.transforms(im) for im in img], dim=0)
-            else:
-                img = torch.stack(
-                    [self.transforms(Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))) for im in img], dim=0
-                )
+            img = torch.stack([self.transforms(im) for im in img], dim=0)
         img = (img if isinstance(img, torch.Tensor) else torch.from_numpy(img)).to(self.model.device)
         return img.half() if self.model.fp16 else img.float()  # uint8 to fp16/32
 

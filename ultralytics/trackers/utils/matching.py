@@ -4,7 +4,7 @@ import numpy as np
 import scipy
 from scipy.spatial.distance import cdist
 
-from ultralytics.utils.metrics import bbox_ioa, batch_probiou
+from ultralytics.utils.metrics import bbox_ioa
 
 try:
     import lap  # for linear_assignment
@@ -13,11 +13,11 @@ try:
 except (ImportError, AssertionError, AttributeError):
     from ultralytics.utils.checks import check_requirements
 
-    check_requirements("lapx>=0.5.2")  # update to lap package from https://github.com/rathaROG/lapx
+    check_requirements('lapx>=0.5.2')  # update to lap package from https://github.com/rathaROG/lapx
     import lap
 
 
-def linear_assignment(cost_matrix: np.ndarray, thresh: float, use_lap: bool = True) -> tuple:
+def linear_assignment(cost_matrix, thresh, use_lap=True):
     """
     Perform linear assignment using scipy or lap.lapjv.
 
@@ -27,24 +27,19 @@ def linear_assignment(cost_matrix: np.ndarray, thresh: float, use_lap: bool = Tr
         use_lap (bool, optional): Whether to use lap.lapjv. Defaults to True.
 
     Returns:
-        Tuple with:
-            - matched indices
-            - unmatched indices from 'a'
-            - unmatched indices from 'b'
+        (tuple): Tuple containing matched indices, unmatched indices from 'a', and unmatched indices from 'b'.
     """
 
     if cost_matrix.size == 0:
         return np.empty((0, 2), dtype=int), tuple(range(cost_matrix.shape[0])), tuple(range(cost_matrix.shape[1]))
 
     if use_lap:
-        # Use lap.lapjv
         # https://github.com/gatagat/lap
         _, x, y = lap.lapjv(cost_matrix, extend_cost=True, cost_limit=thresh)
         matches = [[ix, mx] for ix, mx in enumerate(x) if mx >= 0]
         unmatched_a = np.where(x < 0)[0]
         unmatched_b = np.where(y < 0)[0]
     else:
-        # Use scipy.optimize.linear_sum_assignment
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html
         x, y = scipy.optimize.linear_sum_assignment(cost_matrix)  # row x, col y
         matches = np.asarray([[x[i], y[i]] for i in range(len(x)) if cost_matrix[x[i], y[i]] <= thresh])
@@ -58,7 +53,7 @@ def linear_assignment(cost_matrix: np.ndarray, thresh: float, use_lap: bool = Tr
     return matches, unmatched_a, unmatched_b
 
 
-def iou_distance(atracks: list, btracks: list) -> np.ndarray:
+def iou_distance(atracks, btracks):
     """
     Compute cost based on Intersection over Union (IoU) between tracks.
 
@@ -70,30 +65,23 @@ def iou_distance(atracks: list, btracks: list) -> np.ndarray:
         (np.ndarray): Cost matrix computed based on IoU.
     """
 
-    if atracks and isinstance(atracks[0], np.ndarray) or btracks and isinstance(btracks[0], np.ndarray):
+    if (len(atracks) > 0 and isinstance(atracks[0], np.ndarray)) \
+            or (len(btracks) > 0 and isinstance(btracks[0], np.ndarray)):
         atlbrs = atracks
         btlbrs = btracks
     else:
-        atlbrs = [track.xywha if track.angle is not None else track.xyxy for track in atracks]
-        btlbrs = [track.xywha if track.angle is not None else track.xyxy for track in btracks]
+        atlbrs = [track.tlbr for track in atracks]
+        btlbrs = [track.tlbr for track in btracks]
 
     ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float32)
     if len(atlbrs) and len(btlbrs):
-        if len(atlbrs[0]) == 5 and len(btlbrs[0]) == 5:
-            ious = batch_probiou(
-                np.ascontiguousarray(atlbrs, dtype=np.float32),
-                np.ascontiguousarray(btlbrs, dtype=np.float32),
-            ).numpy()
-        else:
-            ious = bbox_ioa(
-                np.ascontiguousarray(atlbrs, dtype=np.float32),
-                np.ascontiguousarray(btlbrs, dtype=np.float32),
-                iou=True,
-            )
+        ious = bbox_ioa(np.ascontiguousarray(atlbrs, dtype=np.float32),
+                        np.ascontiguousarray(btlbrs, dtype=np.float32),
+                        iou=True)
     return 1 - ious  # cost matrix
 
 
-def embedding_distance(tracks: list, detections: list, metric: str = "cosine") -> np.ndarray:
+def embedding_distance(tracks, detections, metric='cosine'):
     """
     Compute distance between tracks and detections based on embeddings.
 
@@ -117,7 +105,7 @@ def embedding_distance(tracks: list, detections: list, metric: str = "cosine") -
     return cost_matrix
 
 
-def fuse_score(cost_matrix: np.ndarray, detections: list) -> np.ndarray:
+def fuse_score(cost_matrix, detections):
     """
     Fuses cost matrix with detection scores to produce a single similarity matrix.
 

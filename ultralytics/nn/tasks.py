@@ -785,6 +785,14 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
         elif m is CAFM:
             c2 = ch[f]
             args = [ch[f], *args]
+        elif m is SODCalibratedHighFrequencyPrior:
+            c2 = 1
+            args = [[ch[x] for x in f], *args]
+        elif m is DetailAwareFusion:
+            c2 = args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [[ch[x] for x in f], c2, *args[1:]]
         elif m is P2DetailPrior:
             c2 = 1
             args = [ch[f], *args]

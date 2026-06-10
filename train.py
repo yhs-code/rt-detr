@@ -1,7 +1,7 @@
 from ultralytics import RTDETR
 
 if __name__ == "__main__":
-    model = RTDETR("my_cfg/rtdetr-r18-SODGA-P2Detail.yaml")
+    model = RTDETR("my_cfg/rtdetr-r18-SODGA.yaml")
     model.train(
         data="./dataset/A_drowning_person.yaml",
         cache=True,
@@ -11,11 +11,11 @@ if __name__ == "__main__":
         workers=4,
         device="0",
         optimizer="AdamW",
-        deterministic=False,
+        deterministic=True,
         save=True,
         val=True,
         plots=True,
         project="runs/train",
-        name="RT-DETR-R18-SODGA-P2Detail",
+        name="RT-DETR-R18-SODGA",
     )
 

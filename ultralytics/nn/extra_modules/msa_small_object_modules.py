@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-__all__ = ("MSPConv", "SODGuidedAttention", "P2DetailPrior", "DetailGuidance")
+__all__ = ("MSPConv", "SODGuidedAttention", "P2DetailPrior", "DetailGuidance", "EncoderFuzzyRefine", "CAFM")
 
 
 class ConvBNAct(nn.Module):
@@ -147,3 +147,92 @@ class DetailGuidance(nn.Module):
         prior, feat = x
         prior = F.interpolate(prior, size=feat.shape[-2:], mode="bilinear", align_corners=False)
         return feat + self.alpha * feat * prior
+
+
+class CAFM(nn.Module):
+    """Residual convolution-attention fusion for local detail and global context."""
+
+    def __init__(self, channels, groups=4, reduction=4, init_alpha=0.1):
+        super().__init__()
+        if channels % groups != 0:
+            raise ValueError(f"channels ({channels}) must be divisible by groups ({groups}).")
+
+        self.groups = groups
+        hidden = max(channels // reduction, 16)
+        self.local_pre = ConvBNAct(channels, channels, k=1)
+        self.local_group = ConvBNAct(channels, channels, k=3, g=groups)
+        self.local_spatial = ConvBNAct(channels, channels, k=3, g=channels)
+
+        self.q = nn.Sequential(ConvBNAct(channels, hidden, k=1), ConvBNAct(hidden, hidden, k=3, g=hidden))
+        self.k = nn.Sequential(ConvBNAct(channels, hidden, k=1), ConvBNAct(hidden, hidden, k=3, g=hidden))
+        self.v = nn.Sequential(ConvBNAct(channels, channels, k=1), ConvBNAct(channels, channels, k=3, g=channels))
+        self.temperature = nn.Parameter(torch.ones(1))
+
+        self.attn_proj = ConvBNAct(channels, channels, k=1)
+        self.fuse = ConvBNAct(channels * 2, channels, k=1)
+        self.alpha = nn.Parameter(torch.tensor(float(init_alpha)))
+
+    @staticmethod
+    def channel_shuffle(x, groups):
+        b, c, h, w = x.shape
+        x = x.reshape(b, groups, c // groups, h, w)
+        x = x.transpose(1, 2).contiguous()
+        return x.reshape(b, c, h, w)
+
+    def forward(self, x):
+        local = self.local_pre(x)
+        local = self.channel_shuffle(self.local_group(local), self.groups)
+        local = self.local_spatial(local)
+
+        b, _, h, w = x.shape
+        q = self.q(x).flatten(2)
+        k = self.k(x).flatten(2)
+        v = self.v(x).flatten(2)
+        q = F.normalize(q, dim=1)
+        k = F.normalize(k, dim=1)
+        attn = torch.softmax(torch.bmm(q.transpose(1, 2), k) / self.temperature.clamp_min(1e-4), dim=-1)
+        global_feat = torch.bmm(v, attn.transpose(1, 2)).reshape(b, -1, h, w)
+        global_feat = self.attn_proj(global_feat)
+
+        fused = self.fuse(torch.cat((local, global_feat), dim=1))
+        return x + self.alpha * fused
+
+
+class EncoderFuzzyRefine(nn.Module):
+    """Refine AIFI encoder features with multi-scale convolution and fuzzy gates."""
+
+    def __init__(self, channels, hidden_channels=None, reduction=8, init_alpha=0.1):
+        super().__init__()
+        hidden_channels = channels if hidden_channels is None else hidden_channels
+        branch_channels = max(hidden_channels // 4, 8)
+
+        self.ms1 = ConvBNAct(channels, branch_channels, k=1)
+        self.ms3 = ConvBNAct(channels, branch_channels, k=3)
+        self.ms5 = ConvBNAct(channels, branch_channels, k=5)
+        self.ms7 = ConvBNAct(channels, branch_channels, k=7, g=1)
+        self.fuse = ConvBNAct(branch_channels * 4, hidden_channels, k=1)
+
+        gate_hidden = max(hidden_channels // reduction, 8)
+        self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(hidden_channels, gate_hidden, 1, bias=True),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(gate_hidden, hidden_channels, 1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.position_gate = CoordinateGate(hidden_channels, reduction=reduction)
+        self.uncertainty_gate = nn.Sequential(
+            nn.Conv2d(2, 1, 3, padding=1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.out = ConvBNAct(hidden_channels, channels, k=1)
+        self.alpha = nn.Parameter(torch.tensor(float(init_alpha)))
+
+    def forward(self, x):
+        ms = torch.cat((self.ms1(x), self.ms3(x), self.ms5(x), self.ms7(x)), dim=1)
+        feat = self.fuse(ms)
+        mean = feat.mean(dim=1, keepdim=True)
+        deviation = (feat - mean).abs().mean(dim=1, keepdim=True)
+        fuzzy = self.uncertainty_gate(torch.cat((mean, deviation), dim=1))
+        feat = feat * self.channel_gate(feat) * self.position_gate(feat) * fuzzy
+        return x + self.alpha * self.out(feat)

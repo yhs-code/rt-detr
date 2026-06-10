@@ -779,6 +779,9 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
         elif m is SODGuidedAttention:
             c2 = ch[f]
             args = [ch[f], *args]
+        elif m is SODGuidedAttentionStable:
+            c2 = ch[f]
+            args = [ch[f], *args]
         elif m is EncoderFuzzyRefine:
             c2 = ch[f]
             args = [ch[f], *args]

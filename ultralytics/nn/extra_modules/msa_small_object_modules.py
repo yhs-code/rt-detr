@@ -3,7 +3,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-__all__ = ("MSPConv", "SODGuidedAttention", "P2DetailPrior", "DetailGuidance", "EncoderFuzzyRefine", "CAFM")
+__all__ = (
+    "MSPConv",
+    "SODGuidedAttention",
+    "SODGuidedAttentionStable",
+    "P2DetailPrior",
+    "DetailGuidance",
+    "EncoderFuzzyRefine",
+    "CAFM",
+)
 
 
 class ConvBNAct(nn.Module):
@@ -110,6 +118,67 @@ class SODGuidedAttention(nn.Module):
         spatial = self.spatial_gate(torch.cat((detail.mean(1, keepdim=True), detail.amax(1, keepdim=True)), dim=1))
         gated = detail * self.coord_gate(detail) * self.context_gate(x) * spatial
         return x + self.alpha * self.proj(gated)
+
+
+class ConvGNAct(nn.Module):
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True, gn_groups=16):
+        super().__init__()
+        if p is None:
+            p = ((k - 1) * d) // 2
+        groups = min(gn_groups, c2)
+        while c2 % groups != 0 and groups > 1:
+            groups -= 1
+        self.conv = nn.Conv2d(c1, c2, k, s, p, groups=g, dilation=d, bias=False)
+        self.norm = nn.GroupNorm(groups, c2)
+        self.act = nn.SiLU(inplace=True) if act else nn.Identity()
+
+    def forward(self, x):
+        return self.act(self.norm(self.conv(x)))
+
+
+class SODGuidedAttentionStable(nn.Module):
+    """Stable SODGA variant with batch-independent normalization and bounded positive gain."""
+
+    def __init__(self, channels, reduction=16, init_gain=0.1, max_gain=0.3, gn_groups=16):
+        super().__init__()
+        hidden = max(channels // reduction, 8)
+        self.local_detail = nn.Sequential(
+            ConvGNAct(channels, channels, k=3, g=channels, gn_groups=gn_groups),
+            ConvGNAct(channels, channels, k=1, gn_groups=gn_groups),
+        )
+        self.coord_pool = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.GroupNorm(1, hidden),
+            nn.SiLU(inplace=True),
+        )
+        self.coord_h = nn.Conv2d(hidden, channels, 1, bias=True)
+        self.coord_w = nn.Conv2d(hidden, channels, 1, bias=True)
+        self.context_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, hidden, 1, bias=True),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden, channels, 1, bias=True),
+        )
+        self.spatial_gate = nn.Conv2d(2, 1, 7, padding=3, bias=True)
+        self.proj = ConvGNAct(channels, channels, k=1, gn_groups=gn_groups)
+        self.max_gain = float(max_gain)
+        init_ratio = min(max(float(init_gain) / self.max_gain, 1e-4), 1 - 1e-4)
+        self.gain_logit = nn.Parameter(torch.tensor(torch.logit(torch.tensor(init_ratio)).item()))
+
+    def forward(self, x):
+        detail = self.local_detail(x)
+        _, _, h, w = detail.shape
+
+        x_h = F.adaptive_avg_pool2d(detail, (h, 1))
+        x_w = F.adaptive_avg_pool2d(detail, (1, w)).transpose(2, 3)
+        coord = self.coord_pool(torch.cat((x_h, x_w), dim=2))
+        coord_h, coord_w = torch.split(coord, [h, w], dim=2)
+        coord_logit = self.coord_h(coord_h) + self.coord_w(coord_w.transpose(2, 3))
+
+        spatial_input = torch.cat((detail.mean(1, keepdim=True), detail.amax(1, keepdim=True)), dim=1)
+        gate = torch.sigmoid((coord_logit + self.context_gate(x) + self.spatial_gate(spatial_input)) / 3.0)
+        gain = self.max_gain * torch.sigmoid(self.gain_logit)
+        return x + gain * self.proj(detail * gate)
 
 
 class P2DetailPrior(nn.Module):

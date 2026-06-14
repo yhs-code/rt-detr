@@ -796,6 +796,27 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
             args = [[ch[x] for x in f], c2, *args[1:]]
+        elif m is SODGAHighFrequencyPrior:
+            c2 = 1
+            args = [[ch[x] for x in f], *args]
+        elif m is DetailPriorPropagation:
+            c2 = 1
+            args = [ch[f[0]], *args]
+        elif m is DetailGuidedEnhance:
+            c2 = ch[f[0]]
+        elif m is DetailAwareFusionV2:
+            c2 = args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [[ch[x] for x in f], c2, *args[1:]]
+        elif m in (OrthogonalChannelAttention, HaarWaveletConv, CHFB, CSPMSEIE, MSASODAttention, MSAOriginalSODAttention, LGCDFSODAttention, StatisticalFeatureAttention, MDGA):
+            c2 = ch[f]
+            args = [ch[f], *args]
+        elif m in (RFAConv, MSFA, PSConv, PercepConv, DSEB):
+            c1, c2 = ch[f], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]
         elif m is P2DetailPrior:
             c2 = 1
             args = [ch[f], *args]

@@ -18,3 +18,4 @@ from .stair_detr_modules import *
 from .imll_detr_modules import *
 from .lgcdf_sodattention import *
 from .gcr_sodattention import *
+from .wfc_sodattention import *

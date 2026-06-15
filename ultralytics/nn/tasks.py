@@ -809,7 +809,7 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
             args = [[ch[x] for x in f], c2, *args[1:]]
-        elif m in (OrthogonalChannelAttention, HaarWaveletConv, CHFB, CSPMSEIE, MSASODAttention, MSAOriginalSODAttention, LGCDFSODAttention, StatisticalFeatureAttention, MDGA):
+        elif m in (OrthogonalChannelAttention, HaarWaveletConv, CHFB, CSPMSEIE, MSASODAttention, MSAOriginalSODAttention, LGCDFSODAttention, GCRSODAttention, StatisticalFeatureAttention, MDGA):
             c2 = ch[f]
             args = [ch[f], *args]
         elif m in (RFAConv, MSFA, PSConv, PercepConv, DSEB):

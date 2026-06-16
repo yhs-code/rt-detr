@@ -7,6 +7,8 @@ __all__ = (
     "MSPConv",
     "SODGuidedAttention",
     "SODGuidedAttentionStable",
+    "SODGuidedAttentionGNLogit",
+    "SODGuidedAttentionCalib",
     "P2DetailPrior",
     "DetailGuidance",
     "EncoderFuzzyRefine",
@@ -305,3 +307,112 @@ class EncoderFuzzyRefine(nn.Module):
         fuzzy = self.uncertainty_gate(torch.cat((mean, deviation), dim=1))
         feat = feat * self.channel_gate(feat) * self.position_gate(feat) * fuzzy
         return x + self.alpha * self.out(feat)
+
+class SODGuidedAttentionGNLogit(nn.Module):
+    """GN + logit-fused SODGA without learnable alpha.
+
+    This variant keeps the SODGA local detail, coordinate, context and spatial
+    guidance branches, replaces multiplicative sigmoid gates with averaged
+    logits, uses GroupNorm instead of BatchNorm inside the module, and removes
+    the learnable alpha parameter.
+    """
+
+    def __init__(self, channels, reduction=16, gn_groups=16):
+        super().__init__()
+        hidden = max(channels // reduction, 8)
+        self.local_detail = nn.Sequential(
+            ConvGNAct(channels, channels, k=3, g=channels, gn_groups=gn_groups),
+            ConvGNAct(channels, channels, k=1, gn_groups=gn_groups),
+        )
+        self.coord_pool = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.GroupNorm(1, hidden),
+            nn.SiLU(inplace=True),
+        )
+        self.coord_h = nn.Conv2d(hidden, channels, 1, bias=True)
+        self.coord_w = nn.Conv2d(hidden, channels, 1, bias=True)
+        self.context_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, hidden, 1, bias=True),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden, channels, 1, bias=True),
+        )
+        self.spatial_gate = nn.Conv2d(2, 1, 7, padding=3, bias=True)
+        self.proj = ConvGNAct(channels, channels, k=1, gn_groups=gn_groups)
+        self._init_identity_projection()
+
+    def _init_identity_projection(self):
+        nn.init.zeros_(self.proj.conv.weight)
+
+    def forward(self, x):
+        detail = self.local_detail(x)
+        _, _, h, w = detail.shape
+
+        x_h = F.adaptive_avg_pool2d(detail, (h, 1))
+        x_w = F.adaptive_avg_pool2d(detail, (1, w)).transpose(2, 3)
+        coord = self.coord_pool(torch.cat((x_h, x_w), dim=2))
+        coord_h, coord_w = torch.split(coord, [h, w], dim=2)
+        coord_logit = self.coord_h(coord_h) + self.coord_w(coord_w.transpose(2, 3))
+
+        spatial_input = torch.cat((detail.mean(1, keepdim=True), detail.amax(1, keepdim=True)), dim=1)
+        gate = torch.sigmoid((coord_logit + self.context_gate(x) + self.spatial_gate(spatial_input)) / 3.0)
+        gated = detail * gate
+        return x + self.proj(gated)
+
+class SODGuidedAttentionCalib(nn.Module):
+    """Calibration-only SODGA without residual addition or learnable alpha.
+
+    The module keeps SODGA's local detail, coordinate, context and spatial
+    guidance ideas. The three guidance branches produce logits, which are
+    averaged before a sigmoid. The final feature is calibrated as x * gate, so
+    no residual addition and no global alpha parameter are introduced.
+    """
+
+    def __init__(self, channels, reduction=16, gn_groups=16, init_std=1e-3):
+        super().__init__()
+        hidden = max(channels // reduction, 8)
+        self.local_detail = nn.Sequential(
+            ConvGNAct(channels, channels, k=3, g=channels, gn_groups=gn_groups),
+            ConvGNAct(channels, channels, k=1, gn_groups=gn_groups),
+        )
+        self.coord_pool = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.GroupNorm(1, hidden),
+            nn.SiLU(inplace=True),
+        )
+        self.coord_h = nn.Conv2d(hidden, channels, 1, bias=True)
+        self.coord_w = nn.Conv2d(hidden, channels, 1, bias=True)
+        self.context_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, hidden, 1, bias=True),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden, channels, 1, bias=True),
+        )
+        self.spatial_gate = nn.Conv2d(2, 1, 7, padding=3, bias=True)
+        self._init_near_identity(float(init_std))
+
+    def _init_near_identity(self, init_std):
+        nn.init.normal_(self.coord_h.weight, mean=0.0, std=init_std)
+        nn.init.zeros_(self.coord_h.bias)
+        nn.init.normal_(self.coord_w.weight, mean=0.0, std=init_std)
+        nn.init.zeros_(self.coord_w.bias)
+        nn.init.normal_(self.context_gate[-1].weight, mean=0.0, std=init_std)
+        nn.init.zeros_(self.context_gate[-1].bias)
+        nn.init.normal_(self.spatial_gate.weight, mean=0.0, std=init_std)
+        nn.init.zeros_(self.spatial_gate.bias)
+
+    def forward(self, x):
+        detail = self.local_detail(x)
+        _, _, h, w = detail.shape
+
+        x_h = F.adaptive_avg_pool2d(detail, (h, 1))
+        x_w = F.adaptive_avg_pool2d(detail, (1, w)).transpose(2, 3)
+        coord = self.coord_pool(torch.cat((x_h, x_w), dim=2))
+        coord_h, coord_w = torch.split(coord, [h, w], dim=2)
+        coord_logit = self.coord_h(coord_h) + self.coord_w(coord_w.transpose(2, 3))
+
+        spatial_input = torch.cat((detail.mean(1, keepdim=True), detail.amax(1, keepdim=True)), dim=1)
+        gate_logit = (coord_logit + self.context_gate(x) + self.spatial_gate(spatial_input)) / 3.0
+        gate = 2.0 * torch.sigmoid(gate_logit)
+        return x * gate
+

@@ -730,7 +730,7 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
         if m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, DSConv, Focus,
                  BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.Conv2d, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3,
-                 ConvNormLayer, ):
+                 ConvNormLayer, SPDDownsample, PinwheelShapedConv, ):
             if args[0] == 'head_channel':
                 args[0] = d[args[0]]
             c1, c2 = ch[f], args[0]
@@ -815,7 +815,12 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
             args = [[ch[x] for x in f], c2, *args[1:]]
-        elif m in (OrthogonalChannelAttention, HaarWaveletConv, CHFB, CSPMSEIE, MSASODAttention, MSAOriginalSODAttention, LGCDFSODAttention, GCRSODAttention, WFCSODAttention, BCRSODAttention, StatisticalFeatureAttention, MDGA):
+        elif m in (HFFENeckFusion, SAFFMNeckFusion):
+            c2 = args[0] if len(args) else ch[f[1]]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [[ch[x] for x in f], c2, *args[1:]]
+        elif m in (OrthogonalChannelAttention, HaarWaveletConv, CHFB, CSPMSEIE, MSASODAttention, MSAOriginalSODAttention, LGCDFSODAttention, GCRSODAttention, WFCSODAttention, BCRSODAttention, StatisticalFeatureAttention, MDGA, HFP, FBRTFCM, FBRTMKP, MRFFE, DRPCADynamicSpatialAttention, SCPPFeatureEnhance):
             c2 = ch[f]
             args = [ch[f], *args]
         elif m in (RFAConv, MSFA, PSConv, PercepConv, DSEB):

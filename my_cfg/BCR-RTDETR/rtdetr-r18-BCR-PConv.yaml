@@ -1,0 +1,45 @@
+# Ultralytics YOLO, AGPL-3.0 license
+# BCR-combination RT-DETR-R18 config.
+# Combined modules: BCRSODAttention + PinwheelShapedConv
+# BCR placement: P5/32 feature before the paper module.
+# Paper module placement: P5/32 feature after BCR and before input_proj.2/AIFI.
+# Paper: Pinwheel-shaped Convolution and Scale-based Dynamic Loss for Infrared Small Target Detection
+
+nc: 80
+scales:
+  l: [1.00, 1.00, 1024]
+
+backbone:
+  - [-1, 1, ConvNormLayer, [32, 3, 2, None, False, 'relu']] # 0-P1/2
+  - [-1, 1, ConvNormLayer, [32, 3, 1, None, False, 'relu']] # 1
+  - [-1, 1, ConvNormLayer, [64, 3, 1, None, False, 'relu']] # 2
+  - [-1, 1, nn.MaxPool2d, [3, 2, 1]] # 3-P2/4
+  - [-1, 1, Blocks, [64, BasicBlock, 2, 2, 'relu']] # 4-P2/4
+  - [-1, 1, Blocks, [128, BasicBlock, 2, 3, 'relu']] # 5-P3/8
+  - [-1, 1, Blocks, [256, BasicBlock, 2, 4, 'relu']] # 6-P4/16
+  - [-1, 1, Blocks, [512, BasicBlock, 2, 5, 'relu']] # 7-P5/32
+
+head:
+  - [-1, 1, BCRSODAttention, [8, 4, 1, 0.1, 2.0]] # 8 BCR-SODAttention, beta=0.10, tau=2.0
+  - [-1, 1, PinwheelShapedConv, [512, 3, 1]] # 9 PConv from Pinwheel-shaped Convolution paper
+
+
+  - [-1, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 10 input_proj.2
+  - [-1, 1, AIFI, [1024, 8]] # 11
+  - [-1, 1, Conv, [256, 1, 1]] # 12, Y5
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 13
+  - [6, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 14 input_proj.1
+  - [[-2, -1], 1, Concat, [1]] # 15
+  - [-1, 3, RepC3, [256, 0.5]] # 16
+  - [-1, 1, Conv, [256, 1, 1]] # 17, Y4
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 18
+  - [5, 1, Conv, [256, 1, 1, None, 1, 1, False]] # 19 input_proj.0
+  - [[-2, -1], 1, Concat, [1]] # 20
+  - [-1, 3, RepC3, [256, 0.5]] # 21, X3
+  - [-1, 1, Conv, [256, 3, 2]] # 22
+  - [[-1, 17], 1, Concat, [1]] # 23
+  - [-1, 3, RepC3, [256, 0.5]] # 24, F4
+  - [-1, 1, Conv, [256, 3, 2]] # 25
+  - [[-1, 12], 1, Concat, [1]] # 26
+  - [-1, 3, RepC3, [256, 0.5]] # 27, F5
+  - [[21, 24, 27], 1, RTDETRDecoder, [nc, 256, 300, 4, 8, 3]]
